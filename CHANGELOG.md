@@ -9,6 +9,17 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- `codegraph install` and `codegraph upgrade` now offer CodeGraph Pro beta access after finishing — answer yes, type your email, and you join the same waitlist as the getcodegraph.com homepage form. Strictly opt-in and asked at most once per machine total: nothing is sent unless you say yes and enter an email, either answer is remembered so no later install or upgrade ever re-asks, and non-interactive runs (`--yes`, scripts, CI) never see the question.
+- Every release is now cryptographically verifiable: npm packages publish with npm provenance (the "Provenance" badge on npmjs.com, proving each version was built by this repository's release workflow from a specific commit), and the GitHub Release bundles carry signed build attestations you can check with `gh attestation verify <file> -R colbymchenry/codegraph`.
+
+### Fixes
+
+- Callers and impact analysis no longer silently under-count a function that calls the same callee many times. When one caller contained several call sites to the same callee and an internal resolution batch boundary happened to split them, cleanup after the first batch removed the later sites' pending rows before they were ever attempted — their edges were never created, deterministically, and which edges went missing shifted with unrelated changes to the project's total reference count. Post-pass cleanup now targets the exact database row each processed reference came from. Found while validating the operator-call fix on nlohmann/json, where `write_cbor`'s 11 calls to `to_char_type` indexed as 10. (#1269)
+- C++ explicit operator calls — `a.operator+(b)`, `p->operator+(b)`, `a.operator[](3)`, and the other symbolic forms — now produce a `calls` edge to the operator method, so an operator invoked only through the explicit syntax no longer looks uncalled in callers and impact analysis. tree-sitter parses these call sites with the operator name stranded in an error node (never as a normal member access), so the call's target was silently read as just the receiver variable; the operator name is now recovered from the error node and resolved through receiver-type inference like any other member call — a same-named operator on an unrelated class can never capture the edge. Infix uses (`a + b`, `a[i]`) need real type inference and are tracked separately. (#1247)
+- `codegraph init` and `codegraph index` no longer look hung after "Resolving refs" reaches 100%. The dynamic-dispatch linking that runs after resolution (callbacks, React re-renders, C function pointers, and the rest) had no progress display, so on repos where it takes a while — large C codebases especially — the bar just sat frozen at 100% until it finished. That work now shows as its own "Linking dynamic dispatch" progress phase, and the heaviest pass — C function-pointer linking — additionally reports progress within the pass, so a large C codebase advances the bar smoothly instead of parking it on one number for the bulk of the phase.
+- Indexing no longer prints repeated "SQLite is an experimental feature" warnings that garbled the progress display. The warning comes from Node's built-in SQLite and fired once per parsing worker; it's now suppressed on every launch path.
 
 ## [1.4.1] - 2026-07-10
 

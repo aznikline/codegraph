@@ -918,10 +918,11 @@ export function matchDottedCallChain(
       // CRITICAL: resolve the TARGET via a synthetic bare-name ref, but return the
       // match tied to the ORIGINAL `ref` (referenceName `inner().method`). The
       // batched resolver (resolveAndPersistBatched) reads unresolved rows from
-      // offset 0 every pass and relies on deleteSpecificResolvedReferences —
-      // keyed on referenceName — to clear each resolved row so the batch empties.
-      // If we propagated the synthetic ref's bare `method` as `.original`, the
-      // delete would never match the stored `inner().method` row, the batch would
+      // offset 0 every pass and relies on the post-batch cleanup (row-id delete
+      // for DB-loaded refs, referenceName-keyed delete otherwise, #1269) to
+      // clear each resolved row so the batch empties. If we propagated the
+      // synthetic ref's bare `method` as `.original`, a key-based delete
+      // would never match the stored `inner().method` row, the batch would
       // never drain, and the loop would re-resolve + re-insert forever (a runaway
       // that grew gin's graph to 5M edges / 1.4 GB before this fix).
       const bareRef = { ...ref, referenceName: method };
@@ -1459,23 +1460,19 @@ export function matchMethodCall(
   // (with its existing single-candidate / receiver-overlap guards). Without this
   // a multi-dot extension-method call (C# DI `builder.Services.AddCoreServices()`,
   // `Guard.Against.X()`) matched no pattern and never resolved.
-  // The method segment is `\w+` with an optional ObjC selector tail (`:`s).
-  // C/C++ operator-overload call sites arrive as `recv.operator+` /
-  // `recv.operator[]` etc. (the explicit `a.operator+(b)` form, #1247 case 1);
-  // `+`/`[`/`(` aren't in `\w`, so a single `\w+` gate dropped them and the call
-  // edge to the `operator+` method node never resolved. Allow the method segment
-  // to also be `operator` + an overload-symbol tail for C/C++ only — the symbol
-  // set is the C++ overloadable operators; an unbounded `[^.]+` would over-match.
-  const cppOperatorMethod =
-    '(?:operator(?:[\\[\\]()+\\-*/%^&|~!<>=,]+|new|delete|new\\[\\]|delete\\[\\]))';
-  const methodSegment =
-    ref.language === 'cpp' || ref.language === 'c'
-      ? `(?:\\w+:?(?:\\w+:)*|${cppOperatorMethod})`
-      : '\\w+:?(?:\\w+:)*';
-  const dotMatch = ref.referenceName.match(new RegExp(`^([\\w.]+)\\.(${methodSegment})$`));
-  const colonMatch = ref.referenceName.match(
-    new RegExp(`^(\\w+)::(${methodSegment})$`)
-  );
+  // C++ explicit operator call `a.operator+(b)` reaches the resolver as
+  // `a.operator+` (#1247) — the operator's symbol chars (`+`, `==`, `[]`, `()`)
+  // fail the \w method part of the plain pattern, so admit them explicitly.
+  // Names like `operatorTable` stay on the plain pattern (tried first); the
+  // operator form requires at least one non-word char after `operator`, and
+  // every downstream strategy compares the method part by exact string
+  // equality, so a stray match can't invent an edge.
+  const dotMatch =
+    ref.referenceName.match(/^([\w.]+)\.(\w+:?(?:\w+:)*)$/) ??
+    (ref.language === 'cpp'
+      ? ref.referenceName.match(/^([\w.]+)\.(operator[^\w\s.]+)$/)
+      : null);
+  const colonMatch = ref.referenceName.match(/^(\w+)::(\w+)$/);
   // Lua/Luau method calls use a single colon (`lg:log`); R uses `$` (`lg$log`).
   // Recognize these receiver/method separators so local-variable receiver-type
   // inference (#1108) applies to them too — extraction already emits the ref in
